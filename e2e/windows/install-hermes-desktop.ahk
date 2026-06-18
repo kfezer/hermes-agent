@@ -38,6 +38,8 @@ ClickWithMarker(x, y, button := "Left") {
     )
 
     DllCall("SetWindowRgn", "Ptr", g.Hwnd, "Ptr", hRegion, "Int", true)
+    
+    WinSetTransparent(255, g.Hwnd)
 
     ; Remove marker after 500ms
     SetTimer(() => g.Destroy(), -500)
