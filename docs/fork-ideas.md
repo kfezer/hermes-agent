@@ -60,19 +60,30 @@ The `memory` tool is reactive — the agent writes what it notices *during* a se
 
 Reference: Gemma 4 E4B (4-bit, ~28 tok/s), 18K-token system prompt. Memory limits: 2,200 chars `MEMORY.md`, 1,375 chars `USER.md`.
 
+**Critical design principle:** The memory tool hard-refuses adds that would exceed limits, returning the full entry list and "consolidate now." The `operations` batch evaluates the *net final state* — so removing 2 + adding 1 is valid in one atomic call even if the add alone would overflow.
+
 The Dream job must:
 - Use `enabled_toolsets: ["session_search", "memory"]` to minimize its own context footprint
-- Produce short, high-signal entries (target: under 100 chars each)
-- Consolidate and remove entries, not just append — keep total memory lean
+- Treat **consolidation as the primary function**, adding as secondary
+- Leave memory the **same size or smaller** after every run — never larger
+- Gate adds on available headroom (< 60% usage)
 - End with `[SILENT]` to suppress delivery (internal maintenance only)
+
+### Memory usage tiers
+
+| Usage | Behavior |
+|---|---|
+| < 60% | Consolidation pass first, then up to 2 new entries if genuinely novel |
+| 60–80% | Consolidation-only — merge/remove, no net adds |
+| > 80% | Emergency compression — aggressively consolidate, target dropping below 60% |
 
 ### Implementation — existing mechanisms only
 
 Everything needed already exists:
 - `session_search(sort="newest", limit=10)` — browse recent sessions (cron sessions visible)
 - `session_search(session_id="...")` — read full session content
-- `memory(action="read")` — required at job start since `skip_memory=True` in cron context
-- `memory(operations=[...])` — atomic batch of add/replace/remove in one call
+- `memory(action="read")` — required at job start since `skip_memory=True` in cron context; also shows current usage as `"X/2,200 chars"`
+- `memory(operations=[...])` — atomic batch; checks net final state, enabling swap patterns
 
 ### Cron job definition
 
@@ -86,40 +97,50 @@ Everything needed already exists:
 }
 ```
 
-### Dream prompt
+### Dream prompt (size-first design)
 
 ```
-You are running a weekly self-reflection pass. Your goal: improve future sessions
-by synthesizing patterns from recent interactions into memory, while keeping
-memory lean for a context-limited deployment (hard limits: 2,200 chars MEMORY,
-1,375 chars USER).
+You are running a weekly Dream pass — a memory hygiene and distillation job.
 
-Step 1 — Load current state
+CONTEXT: This deployment runs a small local model (Gemma 4 E4B) with hard memory
+limits: 2,200 chars for MEMORY, 1,375 chars for USER. Your primary job is to keep
+memory lean, high-signal, and below 60% capacity. Adding knowledge is secondary
+to compression and consolidation.
+
+Step 1 — Check current state (ALWAYS DO THIS FIRST)
 Call memory(action="read", target="memory") and memory(action="read", target="user").
-Note existing entries — do not duplicate them.
+The read output shows current usage as "X/2,200 chars" and "X/1,375 chars".
+Record both percentages before proceeding.
 
 Step 2 — Review recent sessions
-Call session_search(sort="newest", limit=10) for a session list.
-For the 3-5 most substantive sessions, call session_search(session_id="...") to read them.
+Call session_search(sort="newest", limit=10) to browse session titles and previews.
+For 2-4 substantive sessions, call session_search(session_id="...") to read them.
+Note patterns: recurring corrections, consistent workflows, repeated questions.
 
-Step 3 — Identify improvements
-Look for:
-- Recurring corrections or clarifications the user made → encode as behavioral rules
-- Workflows or tools that worked well → record the pattern, not the instance
-- Stale or redundant memory entries that can be consolidated or removed
-- Preferences that appeared consistently but weren't captured
-- Tasks that recur on a schedule → candidate cron jobs to suggest
+Step 3 — Decide mode based on usage
+- MEMORY < 60% AND USER < 60%: consolidation pass + up to 2 new entries if novel
+- Either store 60-80%: consolidation-only, no new entries
+- Either store > 80%: emergency compression, target dropping below 60%
 
-Step 4 — Update memory atomically
-Use memory(operations=[...]) with a mix of add/replace/remove.
-Rules:
-- Max 3 new entries per run — quality beats quantity
-- Each entry under 100 chars — compress ruthlessly
-- Always consolidate two entries into one where possible
-- Prefer behavioral rules over one-off facts
+Step 4 — Update memory with atomic operations
+Use memory(operations=[...]) for all changes in a single atomic batch.
+The batch checks the NET final state — removing 3 entries + adding 1 is valid
+even if the add alone would overflow.
+
+Consolidation rules:
+- Merge any two entries that cover the same topic into one shorter entry
+- Remove entries that are superseded, no longer true, or too specific to one session
+- Rephrase verbose entries as terse rules (prefer "Use uv for Python" over sentences)
+- Each entry must be under 80 chars — rewrite anything longer
+- After the batch, total chars must be <= what they were at Step 1
+
+Addition rules (only when below 60% capacity):
+- Max 2 new entries per run total across both stores
+- Only add if the pattern appeared in >= 2 sessions and is not already captured
+- Prefer a behavioral rule ("Always X when Y") over a one-off fact
 
 Step 5 — End with [SILENT]
-This is an internal maintenance run. No delivery.
+Internal maintenance only — no delivery needed.
 ```
 
 ### Future: two-phase design for larger deployments
