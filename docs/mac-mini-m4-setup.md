@@ -147,7 +147,7 @@ agent:
     - computer_use
     - vision
     - tts
-    - code_execution
+  environment_hint: "User is in Seattle, WA — default for weather, events, time. On routine tasks (cron, jobs, traceability, scheduling): act on sensible defaults, ask only when ambiguity changes which tool to call."
 
 auxiliary:
   compression:
@@ -169,7 +169,8 @@ toolsets:
 
 **Key config notes:**
 - `provider: custom` with `base_url` pointing directly to rapid-mlx on port 8001. Do not use `provider: ollama` for the auxiliary compression client — it doesn't recognize that provider name.
-- Disabled toolsets skip loading image generation, vision, TTS, and code execution — these aren't useful for a text-only local model and each adds overhead to the tool list sent with every prompt.
+- Disabled toolsets skip image generation, vision, TTS — not useful for a text-only local model. `code_execution` is left **enabled** (it's useful and Gemma 4 handles it fine).
+- `environment_hint` injects operator context into every system prompt — use it to pre-answer recurring questions (location, preferred defaults) so the model doesn't ask.
 - No `context_length` override needed — Gemma 4 natively reports 262144 tokens, well above Hermes's 64K minimum.
 - No `reasoning_effort` override needed — let Hermes manage it via the gemma4 reasoning parser.
 
@@ -255,13 +256,119 @@ Use the board's IP address directly — mDNS can be unreliable. To get the API k
 
 | Tool | Description |
 |---|---|
-| `vestaboard_weather_forecast` | Fetches live weather, shows matching icon for 4s then data |
+| `vestaboard_weather_forecast` | Fetches live weather. Standard mode: icon for 4s then full 3-day data. `compact=True`: icon + condensed today view side by side |
+| `vestaboard_icon_text` | Generic icon + text layout: 6×8 icon on the left, 13 chars of free-form text on the right |
 | `vestaboard_send_text` | Send centered text (up to 6 rows × 22 chars) |
 | `vestaboard_send_long_text` | Auto-splits long text across multiple screens, cycles in background |
-| `vestaboard_show_icon` | Display a weather icon directly: sunny, cloudy, rainy, snowy, stormy, foggy, windy, hot |
+| `vestaboard_show_icon` | Display a full-board weather icon (6×22): sunny, cloudy, rainy, snowy, stormy, foggy, windy, hot |
 | `vestaboard_read` | Read current board contents |
 | `vestaboard_clear` | Blank the display |
 | `vestaboard_send_raw` | Send a raw 6×22 color-code grid |
+
+---
+
+## Tuning for local models
+
+Local models running as `provider: custom` need a few extra nudges that cloud models get automatically.
+
+### Reduce clarifying questions (act-don't-ask patch)
+
+By default, the `<act_dont_ask>` guidance — which tells Hermes to act on obvious defaults instead of asking — is only injected for OpenAI/Grok model families. Gemma and other local models miss it, causing repeated clarifying questions for routine tasks.
+
+**Fix:** Edit `~/.hermes/hermes-agent/agent/system_prompt.py` line 255:
+
+```python
+# before
+if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+# after
+if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower or "gemma" in _model_lower:
+```
+
+Then restart: `hermes gateway restart`
+
+This applies to `mlx-community/gemma-4-e4b-it-4bit` and any other Gemma variant.
+
+### Pre-populate user profile
+
+Hermes loads `~/.hermes/memories/USER.md` into every system prompt. Pre-filling it with known facts means the model never asks about them. Create the file if it doesn't exist:
+
+```
+User is in Seattle, WA. Use Seattle as default for weather, events, time, and location queries.
+§
+For routine tasks (cron, scheduling, traceability): act on sensible defaults, don't ask.
+§
+All Python work uses uv: `uv venv` and `uv pip install`.
+```
+
+Entries are separated by `§` (section sign). The store is limited to 1,375 chars — keep entries short.
+
+---
+
+## Dream — weekly self-reflection cron
+
+Dream is a weekly cron job that reviews recent sessions and updates memory. The primary goal is **memory hygiene and distillation**, not accumulation — each run should leave memory the same size or smaller.
+
+Create the job:
+
+```bash
+hermes cron create "0 3 * * 0" \
+  "You are running a weekly Dream pass — a memory hygiene and distillation job.
+
+CONTEXT: This deployment runs a small local model (Gemma 4 E4B) with hard memory limits: 2,200 chars for MEMORY, 1,375 chars for USER. Your primary job is to keep memory lean, high-signal, and below 60% capacity. Adding knowledge is secondary to compression and consolidation.
+
+Step 1 — Check current state (ALWAYS DO THIS FIRST)
+Call memory(action='read', target='memory') and memory(action='read', target='user'). The read output shows current usage as 'X/2,200 chars' and 'X/1,375 chars'. Record both percentages before proceeding.
+
+Step 2 — Review recent sessions
+Call session_search(sort='newest', limit=10) to browse session titles and previews. For 2-4 substantive sessions, call session_search(session_id='...') to read them. Note patterns: recurring corrections, consistent workflows, repeated questions.
+
+Step 3 — Decide mode based on usage
+- MEMORY < 60% AND USER < 60%: consolidation pass + up to 2 new entries if novel
+- Either store 60-80%: consolidation-only, no new entries
+- Either store > 80%: emergency compression, target dropping below 60%
+
+Step 4 — Update memory with atomic operations
+Use memory(operations=[...]) for all changes in a single atomic batch. The batch checks the NET final state — removing 3 entries + adding 1 is valid even if the add alone would overflow.
+
+Consolidation rules: merge entries on the same topic; remove superseded or session-specific entries; rewrite verbose entries as terse rules under 80 chars; after the batch, total chars must be <= Step 1.
+
+Addition rules (only when below 60%): max 2 new entries per run; only if the pattern appeared in >= 2 sessions and is not already captured; prefer behavioral rules over one-off facts.
+
+Step 5 — End with [SILENT]" \
+  --name "Dream" --deliver local
+```
+
+After creating, restrict toolsets to keep the job's own context lean:
+
+```bash
+# Get the job ID
+hermes cron list
+
+# Edit jobs.json to add enabled_toolsets (CLI doesn't expose this yet)
+python3 -c "
+import json
+path = '$HOME/.hermes/cron/jobs.json'
+with open(path) as f: data = json.load(f)
+for j in data['jobs']:
+    if j['name'] == 'Dream':
+        j['enabled_toolsets'] = ['session_search', 'memory']
+        print('Set toolsets on:', j['id'])
+with open(path, 'w') as f: json.dump(data, f, indent=2)
+"
+```
+
+**Test a manual run:**
+```bash
+hermes cron run <job-id>
+# Output lands in ~/.hermes/cron/output/<job-id>/
+```
+
+**Memory tiering explained:**
+- < 60%: consolidate existing entries, then add up to 2 genuinely new ones
+- 60–80%: consolidation only — merge/remove, no net adds
+- > 80%: emergency compression — aggressively consolidate, target dropping below 60%
+
+The memory tool hard-refuses adds that would exceed limits, returning all current entries and "consolidate now." The `operations` batch evaluates net final state, so removing two entries and adding one condensed replacement is valid in a single atomic call.
 
 ---
 
