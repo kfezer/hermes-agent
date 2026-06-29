@@ -476,6 +476,59 @@ CATALOG: List[AutomationBlueprint] = [
         ],
         tags=("daily", "curiosity"),
     ),
+    AutomationBlueprint(
+        key="dream",
+        title="Dream — weekly memory distillation",
+        description=(
+            "A weekly maintenance job that reviews recent sessions and "
+            "distills patterns into Hermes's memory stores. Prioritizes "
+            "compression and consolidation over accumulation so memory "
+            "stays lean and high-signal regardless of how long Hermes has "
+            "been running. Recommended: restrict enabled_toolsets to "
+            "'session_search' and 'memory' for efficiency."
+        ),
+        category="maintenance",
+        schedule_template="{minute} {hour} * * 0",
+        prompt_template=(
+            "You are running a weekly Dream pass — a memory hygiene and distillation job.\n\n"
+            "CONTEXT: Hermes memory stores have hard size limits. Your primary job is to "
+            "keep memory lean, high-signal, and below 60%% capacity. Adding new knowledge "
+            "is secondary to compression and consolidation.\n\n"
+            "Step 1 — Check current state (ALWAYS DO THIS FIRST)\n"
+            "Call memory(action=\"read\", target=\"memory\") and memory(action=\"read\", target=\"user\"). "
+            "Note: the read output shows current usage as \"X/N chars\". "
+            "Record both percentages before proceeding.\n\n"
+            "Step 2 — Review recent sessions\n"
+            "Call session_search(sort=\"newest\", limit=10) to browse session titles and previews. "
+            "For 2-4 substantive sessions, call session_search(session_id=\"...\") to read them. "
+            "Note patterns: recurring corrections, consistent workflows, repeated questions.\n\n"
+            "Step 3 — Decide mode based on usage\n"
+            "- BOTH stores < 60%%: consolidation pass + up to 2 new entries if novel\n"
+            "- Either store 60-80%%: consolidation-only, no new entries\n"
+            "- Either store > 80%%: emergency compression, target dropping below 60%%\n\n"
+            "Step 4 — Update memory with atomic operations\n"
+            "Use memory(operations=[...]) for all changes in a single atomic batch. "
+            "The batch checks the NET final state — removing 3 entries + adding 1 is valid "
+            "even if the add alone would overflow.\n\n"
+            "Consolidation rules:\n"
+            "- Merge any two entries covering the same topic into one shorter entry\n"
+            "- Remove entries that are superseded, no longer true, or too specific to one session\n"
+            "- Rephrase verbose entries as terse rules (prefer 'Use uv for Python' over sentences)\n"
+            "- Each entry must be under 80 chars — rewrite anything longer\n"
+            "- After the batch, total chars must be <= what they were at Step 1\n\n"
+            "Addition rules (only when both stores < 60%% capacity):\n"
+            "- Max 2 new entries per run total across both stores\n"
+            "- Only add if the pattern appeared in >= 2 sessions and isn't already captured\n"
+            "- Prefer a behavioral rule ('Always X when Y') over a one-off fact\n\n"
+            "Step 5 — End with [SILENT]\n"
+            "Internal maintenance only — no delivery needed."
+        ),
+        slots=[
+            _TIME("03:00"),
+            _DELIVER,
+        ],
+        tags=("memory", "maintenance"),
+    ),
 ]
 
 _CATALOG_BY_KEY = {r.key: r for r in CATALOG}
