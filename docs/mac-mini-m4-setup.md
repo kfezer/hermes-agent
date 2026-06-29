@@ -304,6 +304,49 @@ Entries are separated by `§` (section sign). The store is limited to 1,375 char
 
 ---
 
+## Claude Code Delegate skill
+
+This skill lets Hermes implement code and then hand the final diff to Claude Code CLI for an independent review — useful because local models (Gemma 4, Qwen, etc.) may miss subtle bugs that a cloud model catches. If Claude Code is unavailable or hits its budget, a fresh Hermes subagent reviews instead.
+
+The skill is bundled in the hermes-agent repo at `skills/software-development/claude-code-delegate/` and loads automatically.
+
+### Prerequisites
+
+Claude Code CLI must be installed on the Mac Mini:
+
+```bash
+# Install
+npm install -g @anthropic-ai/claude-code
+
+# Verify
+claude --version
+
+# Authenticate (stores key in keychain)
+claude login
+```
+
+The skill uses `--max-budget-usd 0.10` per review call by default (~$0.10 covers 200–400 lines via Claude Sonnet). Adjust the cap in the skill file if needed.
+
+### How to trigger
+
+Hermes auto-triggers it for multi-step coding tasks. You can also invoke it explicitly:
+
+- "Use the claude-code-delegate skill to implement X"
+- "Implement X, then have Claude Code review the final diff"
+- "Do a final review pass on what you just wrote"
+
+Single-line fixes and config-only changes skip it — direct editing is faster.
+
+### How it works
+
+1. **Hermes implements** using its own tools (read_file, patch, terminal)
+2. **Gets the diff** (`git diff HEAD`)
+3. **Runs** `claude --print --max-budget-usd 0.10 -p "Review this diff..."` with a hard spend cap
+4. **Applies findings**: critical issues fixed immediately; important issues fixed or flagged; minor issues noted in summary only
+5. **Fallback**: if `claude` exits non-zero for any reason (rate limit, budget hit, auth error), a fresh Hermes subagent does the review instead — task completion is never blocked
+
+---
+
 ## Dream — weekly self-reflection cron
 
 Dream is a weekly cron job that reviews recent sessions and updates memory. The primary goal is **memory hygiene and distillation**, not accumulation — each run should leave memory the same size or smaller.
