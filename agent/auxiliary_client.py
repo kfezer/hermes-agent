@@ -264,6 +264,25 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+# Small local models degrade well before their nominal context window fills:
+# most of gemma-4-e4b's layers are short-window sliding attention (window=512,
+# only every 6th layer is full-attention), so the default 50% global threshold
+# (~65K tokens on this model's real 131,072-token window) is far too generous.
+# Observed directly: a real conversation hit 35,671 input tokens (27% of the
+# window, well under the 50% trigger) with only a 10% KV cache hit and 113s
+# latency, and on that turn the model emitted "[Calling tool" as plain text
+# with zero structured tool_calls instead of actually invoking the tool —
+# degraded-context narration instead of a real call. Lowering the trigger to
+# 15% (~19.7K tokens) compresses before reaching that zone.
+def _is_local_gemma4(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for the local gemma-4-e4b model served via the custom rapid-mlx provider."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return (provider or "").strip().lower() == "custom" and "gemma-4-e4b" in bare
+
+
+_LOCAL_GEMMA4_COMPACTION_THRESHOLD = 0.15
+
+
 # Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
 # The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
 # Codex backend hard-caps at 272K (verified live: a ~330K-token request to
@@ -333,6 +352,9 @@ def _compression_threshold_for_model(
         at 272K and the default 50% trigger would compact at ~136K. Gated by
         ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
         global default (the caller passes the config flag through here).
+      - Local gemma-4-e4b (custom provider) → 0.15, because small local
+        models degrade well before their nominal window fills — see
+        ``_is_local_gemma4`` for the observed failure this addresses.
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
@@ -341,6 +363,8 @@ def _compression_threshold_for_model(
         return 0.75
     if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
         return _CODEX_GPT55_COMPACTION_THRESHOLD
+    if _is_local_gemma4(model, provider):
+        return _LOCAL_GEMMA4_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
