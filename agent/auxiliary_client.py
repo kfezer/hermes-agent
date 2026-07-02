@@ -272,15 +272,26 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
 # window, well under the 50% trigger) with only a 10% KV cache hit and 113s
 # latency, and on that turn the model emitted "[Calling tool" as plain text
 # with zero structured tool_calls instead of actually invoking the tool —
-# degraded-context narration instead of a real call. Lowering the trigger to
-# 15% (~19.7K tokens) compresses before reaching that zone.
+# degraded-context narration instead of a real call.
+#
+# Threshold was originally set to 0.15 (~19.7K tokens) on 2026-07-01, when the
+# fixed system-prompt + tool-schema baseline was ~33K tokens (the actual
+# dominant cause of the narration failures, traced to the `webull` MCP server
+# alone registering 90 of 108 total tool schemas). With webull disabled the
+# baseline dropped to ~15.8K tokens, leaving only ~3.9K tokens of headroom
+# before 0.15's trigger point — compression would fire on essentially every
+# first or second exchange. Raised to 0.20 (~26.2K tokens) on 2026-07-02 to
+# restore reasonable headroom (~10.4K tokens post-baseline) while staying
+# well clear of the ~35K zone where degradation was actually observed. If the
+# tool/schema baseline changes again (MCP servers added/removed), re-derive
+# this from a fresh `agent.log` "API call #1" line at `history=0`.
 def _is_local_gemma4(model: Optional[str], provider: Optional[str] = None) -> bool:
     """True for the local gemma-4-e4b model served via the custom rapid-mlx provider."""
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     return (provider or "").strip().lower() == "custom" and "gemma-4-e4b" in bare
 
 
-_LOCAL_GEMMA4_COMPACTION_THRESHOLD = 0.15
+_LOCAL_GEMMA4_COMPACTION_THRESHOLD = 0.20
 
 
 # Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
@@ -352,7 +363,7 @@ def _compression_threshold_for_model(
         at 272K and the default 50% trigger would compact at ~136K. Gated by
         ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
         global default (the caller passes the config flag through here).
-      - Local gemma-4-e4b (custom provider) → 0.15, because small local
+      - Local gemma-4-e4b (custom provider) → 0.20, because small local
         models degrade well before their nominal window fills — see
         ``_is_local_gemma4`` for the observed failure this addresses.
 
