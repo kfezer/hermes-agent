@@ -631,8 +631,13 @@ def _compression_threshold_for_model(
     """Per-model/route compression threshold override (fraction of context used), or None.
 
     Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
-    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
+    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated;
+    gemma-4-e4b-it-4bit (local, custom provider) → 0.20 (~26.2K of its real 131,072-token window) —
+    most of its transformer layers are short-window sliding attention (window=512, only every 6th
+    layer is full-attention), so it degrades well before the global 50% default would trigger.
     """
+    if model and "gemma-4-e4b" in model.lower():
+        return 0.20
     if _is_arcee_trinity_thinking(model):
         return 0.75
     if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
